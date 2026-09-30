@@ -1,0 +1,100 @@
+Engineering Specification: Local MRL Embedding Fine-Tuning Pipeline (Hawaii Google Local)
+1. System Overview & Objective
+Build an end-to-end local fine-tuning and evaluation pipeline on Apple Silicon (Metal Performance Shaders) that adapts a Gemma-based architecture into a bi-encoder producing Matryoshka Representation Learning (MRL) embeddings.
+The system consumes the UCSD Google Local Hawaii subset (meta-Hawaii.json.gz and review-Hawaii.json.gz), builds query-to-document retrieval pairs, fine-tunes the embedding backbone with nested dimensional loss, and benchmarks retrieval quality across truncated dimensions.
+2. Environment & Dependency Specifications
+Environment Variables
+• HF_TOKEN: Standard Hugging Face user access token with read permissions (pre-injected in runtime).
+Hardware Target
+• Accelerator: Apple Silicon via PyTorch MPS (torch.device("mps")).
+• Memory Constraints: Target execution within a 32 GB unified memory footprint without swapping.
+Core Dependencies (requirements.txt)
+torch>=2.2.0
+sentence-transformers>=3.0.0
+transformers>=4.44.0
+peft>=0.12.0
+accelerate>=0.33.0
+datasets>=2.20.0
+pandas>=2.2.0
+numpy>=1.26.0
+tqdm>=4.66.0
+
+3. Data Pipeline & Schema
+Data Sources
+• Metadata: [https://mcauleylab.ucsd.edu/public_datasets/gdrive/googlelocal/meta-Hawaii.json.gz](https://mcauleylab.ucsd.edu/public_datasets/gdrive/googlelocal/meta-Hawaii.json.gz)
+• Reviews: [https://mcauleylab.ucsd.edu/public_datasets/gdrive/googlelocal/review-Hawaii.json.gz](https://mcauleylab.ucsd.edu/public_datasets/gdrive/googlelocal/review-Hawaii.json.gz)
+Pipeline Requirements
+1. Downloader (src/data/download.py): • Download compressed gzip files with retry logic and streaming disk writes to data/raw/. • Skip re-download if files exist and pass basic integrity checks.
+2. Parsing & Filtering (src/data/preprocess.py): • Process lines as streaming JSON (json.loads). • Metadata Parsing: Extract gmap_id, name, category, description, avg_rating, num_of_reviews, latitude, longitude. • Review Parsing: Extract user_id, gmap_id, rating, text, time. Filter out reviews where text is null, empty, or shorter than 20 characters.
+3. Pair Generation Strategy: • Anchor (q): User review text (simulating organic natural language search queries). • Positive (k_+): Enriched item representation structured as: Business: {name} | Categories: {category_list} | Details: {description} • Deduplication & Split: • Group reviews by user_id and gmap_id. • Stratified split by gmap_id (ensuring test businesses do not leak into the training split): • 85% Train • 5% Validation • 10% Test / Retrieval Evaluation Pool
+4. Model Architecture & MRL Configuration
+Base Model
+• Model Backbone: google/gemma-2-2b (configured with Mean Pooling) or google/embeddinggemma-300m.
+• LoRA Configuration (if using 2B+): • Target modules: ["q_proj", "v_proj", "k_proj", "o_proj"] • r = 16, \alpha = 32, dropout = 0.05.
+Loss Function
+• Implement sentence_transformers.losses.MatryoshkaLoss wrapping MultipleNegativesRankingLoss.
+• Nested Dimensions: [1024, 512, 256, 128, 64] (or [768, 512, 256, 128, 64] depending on base model hidden size).
+• Dimension Loss Weighting: Uniform weights:  $$\mathcal{L}_{\text{total}} = \sum_{d \in D} \mathcal{L}_{\text{InfoNCE}}(d)$$
+5. Training Specifications (src/train.py)
+Training Hyperparameters
+Parameter	Value	Justification
+Device	mps	Utilize Apple Metal acceleration
+Batch Size	32 (or 16 with gradient accumulation = 2)	Maximizes in-batch negative capacity within MPS limits
+Optimizer	AdamW	Standard decoupled weight decay
+Learning Rate	2e-5 (full) or 1e-4 (LoRA)	Linear warmup with cosine decay (10% warmup)
+Precision	torch.float32 or torch.bfloat16	Verify MPS stability; fall back to FP32 if ops lack FP16 kernel
+Epochs	3	Sufficient for domain adaptation on compact state data
+Logging & Checkpointing
+• Track training and validation loss per Matryoshka dimension.
+• Save checkpoints to checkpoints/ retaining only top 2 performing checkpoints based on validation loss.
+6. Evaluation & Benchmarking Module (src/evaluate.py)
+Evaluate search performance across all configured Matryoshka dimensions using the held-out test split.
+Metrics Required per Dimension
+• NDCG@10
+• MRR@10
+• Recall@1, Recall@5, Recall@10
+• Vector Footprint: Storage size in MB per 10k entities.
+• Latency: Search latency over 1,000 queries using cosine similarity.
+Output
+Generate a Markdown benchmark table and export a CSV report to reports/benchmark_mrl.csv.
+Expected output format:
+| Dimension | NDCG@10 | MRR@10 | Recall@10 | Size/10k Vectors (MB) | Avg Latency (ms) |
+|-----------|---------|--------|-----------|------------------------|------------------|
+| 1024      | ...     | ...    | ...       | 40.96                  | ...              |
+| 512       | ...     | ...    | ...       | 20.48                  | ...              |
+| 256       | ...     | ...    | ...       | 10.24                  | ...              |
+| 128       | ...     | ...    | ...       | 5.12                   | ...              |
+| 64        | ...     | ...    | ...       | 2.56                   | ...              |
+
+7. Interactive CLI Demo (src/demo.py)
+Provide a lightweight interactive terminal utility for live testing:
+1. Load fine-tuned weights.
+2. Accept a raw natural language query string from user input (e.g., "quiet beachfront coffee shop with vegan options").
+3. Generate embeddings sliced dynamically at dimensions specified by a --dim flag (default: 128).
+4. Run top-k nearest neighbor search against the pre-embedded Hawaii business corpus.
+5. Print ranked results with metadata (Name, Categories, Relevance Score).
+8. Directory Structure Deliverable
+├── data/
+│   ├── raw/
+│   └── processed/
+├── src/
+│   ├── __init__.py
+│   ├── data/
+│   │   ├── download.py
+│   │   └── preprocess.py
+│   ├── models/
+│   │   └── mrl_model.py
+│   ├── train.py
+│   ├── evaluate.py
+│   └── demo.py
+├── reports/
+│   └── benchmark_mrl.csv
+├── requirements.txt
+├── README.md
+└── run_pipeline.sh
+
+9. Acceptance Criteria
+1. Automation: bash run_pipeline.sh executes downloading, preprocessing, training, evaluation, and report generation without manual intervention.
+2. Device Verification: Script must explicitly verify torch.backends.mps.is_available() and raise an error if not running on Metal acceleration.
+3. MRL Verification: Test vectors truncated to 64 dimensions must demonstrate non-random retrieval (NDCG@10 retaining at least 80% of the full-dimension score).
+4. Clean Exit: Demo CLI must run queries in under 50ms locally at 128 dimensions.

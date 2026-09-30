@@ -1,0 +1,30 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caches
+.cache/
+.pytest_cache/
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Model Checkpoints & Large Tensor Binaries
+checkpoints/
+*.pt
+*.bin
+*.safetensors
+
+# Data (Raw & Processed) - Kept reproducible via run_pipeline.sh
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# macOS
+.DS_Store
+._*
