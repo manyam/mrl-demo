@@ -1,0 +1,39 @@
+# ==============================================================================
+# MRL Search & Generative Summary Configuration
+# ==============================================================================
+
+# Retrieval Engine Configuration
+retrieval:
+  model_path: "checkpoints/best_model"
+  data_dir: "data/processed"
+  default_dimension: 128
+  top_k: 5
+  device: "mps"
+
+# Generative Search Summarization Configuration
+summary:
+  enabled: true
+  stream: true
+  default_backend: "auto"          # Options: "auto", "local", "ollama", "google", "extractive"
+  
+  # Generation Hyperparameters
+  max_new_tokens: 384
+  temperature: 0.3
+  top_p: 0.9
+
+  # Backend 1: Local Transformers on Apple Silicon MPS
+  local:
+    model_name: "google/gemma-2-2b-it"  # Configurable local HF model identifier or local path
+    torch_dtype: "float16"              # "float16" or "bfloat16"
+    device: "mps"
+
+  # Backend 2: Local Ollama Gemma
+  ollama:
+    base_url: "http://localhost:11434"
+    model_name: "gemma2:2b"             # Configurable Ollama model (e.g. gemma2:2b, gemma:2b, gemma2:9b)
+    timeout: 30.0
+
+  # Backend 3: Google Generative AI API (GOOGLE_API_KEY or GEMINI_API_KEY)
+  google:
+    model_name: "gemini-2.0-flash"      # Configurable Google model (e.g. gemini-2.0-flash, gemini-1.5-flash)
+    timeout: 20.0

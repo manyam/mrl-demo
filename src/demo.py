@@ -1,8 +1,8 @@
-"""Interactive CLI Demo for local MRL embedding search.
+"""Interactive CLI Demo for local MRL embedding search with Generative Search Summarization.
 
 Loads fine-tuned weights, dynamically truncates embeddings to --dim (default 128),
-searches pre-embedded Hawaii businesses, prints ranked results with metadata,
-and confirms sub-50ms search latency.
+searches pre-embedded Hawaii businesses with sub-50ms latency, and generates an AI Search
+Overview / Generative Search Summary of top-5 results using configurable local or API models.
 """
 
 import argparse
@@ -20,6 +20,9 @@ if str(PROJECT_ROOT) not in sys.path:
 import torch
 import torch.nn.functional as F
 from sentence_transformers import SentenceTransformer
+
+from src.summary import BaseSearchSummarizer, create_summarizer
+from src.utils.config import ConfigDict, load_config
 
 logging.basicConfig(
     level=logging.INFO,
@@ -127,10 +130,10 @@ def run_query(
 
 
 def display_results(query: str, results: list[dict], latency_ms: float, dim: int):
-    """Print beautifully formatted search results."""
+    """Print beautifully formatted ranked search results."""
     print("\n" + "-" * 75)
     print(f"QUERY: \"{query}\" (Dimension: {dim})")
-    print(f"LATENCY: {latency_ms:.2f} ms " + ("[PASS < 50ms]" if latency_ms < 50.0 else "[EXCEEDED 50ms]"))
+    print(f"RETRIEVAL LATENCY: {latency_ms:.2f} ms " + ("[PASS < 50ms]" if latency_ms < 50.0 else "[EXCEEDED 50ms]"))
     print("-" * 75)
     for rank, res in enumerate(results, 1):
         print(f"[{rank}] {res['name']}  (Score: {res['score']:.4f})")
@@ -144,32 +147,105 @@ def display_results(query: str, results: list[dict], latency_ms: float, dim: int
     print("-" * 75)
 
 
+def display_summary(
+    query: str,
+    results: list[dict],
+    summarizer: BaseSearchSummarizer,
+    stream: bool = True,
+):
+    """Generate and display the AI Search Overview synthesizing the top places."""
+    print("\n" + "=" * 75)
+    print(f"✦ AI SEARCH OVERVIEW (Model: {summarizer.model_name} | Backend: {summarizer.name})")
+    print("=" * 75)
+
+    start_time = time.perf_counter()
+    full_text = ""
+    token_count = 0
+
+    try:
+        if stream:
+            for chunk in summarizer.stream_generate(query, results):
+                sys.stdout.write(chunk)
+                sys.stdout.flush()
+                full_text += chunk
+                # Approximate token count by whitespace chunks
+                token_count += len(chunk.split())
+            print()
+        else:
+            full_text = summarizer.generate(query, results)
+            print(full_text)
+            token_count = len(full_text.split())
+
+        elapsed = time.perf_counter() - start_time
+        tok_per_sec = (token_count / elapsed) if elapsed > 0 else 0.0
+
+        print("-" * 75)
+        print(f"[Synthesis Latency: {elapsed:.2f}s | Speed: ~{tok_per_sec:.1f} words/s]")
+        print("=" * 75 + "\n")
+
+    except Exception as e:
+        logger.error(f"Error during search summarization: {e}")
+        print(f"\n[Unable to complete search summary: {e}]\n" + "=" * 75 + "\n")
+
+
+def print_repl_help():
+    """Print REPL interactive commands."""
+    print("\nAvailable REPL Commands:")
+    print("  /summary [on|off]              : Enable or disable AI Search Overview")
+    print("  /backend [local|ollama|google|extractive|auto] : Switch summary backend")
+    print("  /dim [64|128|256|512|768]      : Switch Matryoshka retrieval dimension")
+    print("  /config                        : View currently loaded configuration")
+    print("  /help                          : Show this help message")
+    print("  exit / quit                    : Exit the interactive demo\n")
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Interactive CLI Demo for local MRL retrieval.")
-    parser.add_argument("--model_path", type=str, default="checkpoints/best_model", help="Path to fine-tuned model")
-    parser.add_argument("--data_dir", type=str, default="data/processed", help="Path to processed data")
-    parser.add_argument("--dim", type=int, default=128, help="Matryoshka embedding dimension (default: 128)")
-    parser.add_argument("--top_k", type=int, default=5, help="Number of nearest neighbors to retrieve")
+    parser = argparse.ArgumentParser(description="Interactive CLI Demo for local MRL retrieval and generative search summary.")
+    parser.add_argument("--config", type=str, default="configs/config.yaml", help="Path to YAML configuration file")
+    parser.add_argument("--model_path", type=str, default=None, help="Override retrieval model path")
+    parser.add_argument("--data_dir", type=str, default=None, help="Override path to processed data")
+    parser.add_argument("--dim", type=int, default=None, help="Matryoshka embedding dimension (default from config: 128)")
+    parser.add_argument("--top_k", type=int, default=None, help="Number of nearest neighbors to retrieve (default from config: 5)")
     parser.add_argument("--query", type=str, default=None, help="Execute single query and exit")
+    parser.add_argument("--summary", dest="summary_enabled", action="store_true", default=None, help="Enable generative search summary")
+    parser.add_argument("--no-summary", dest="summary_enabled", action="store_false", help="Disable generative search summary")
+    parser.add_argument("--summary_backend", type=str, default=None, choices=["auto", "local", "ollama", "google", "extractive"], help="Override summary backend")
+    parser.add_argument("--no-stream", dest="stream", action="store_false", default=True, help="Disable real-time token streaming")
     args = parser.parse_args()
 
-    # Determine device
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    # 1. Load YAML Configuration
+    config = load_config(args.config)
+
+    # 2. Resolve parameters (CLI overrides YAML config)
+    retrieval_cfg = config.retrieval
+    summary_cfg = config.summary
+
+    model_path = args.model_path or retrieval_cfg.get("model_path", "checkpoints/best_model")
+    data_dir_path = Path(args.data_dir or retrieval_cfg.get("data_dir", "data/processed"))
+    target_dim = args.dim or retrieval_cfg.get("default_dimension", 128)
+    top_k = args.top_k or retrieval_cfg.get("top_k", 5)
+
+    summary_enabled = summary_cfg.get("enabled", True) if args.summary_enabled is None else args.summary_enabled
+    backend_choice = args.summary_backend or summary_cfg.get("default_backend", "auto")
+    stream_output = args.stream if args.stream is not None else summary_cfg.get("stream", True)
+
+    # 3. Determine device
+    device_str = retrieval_cfg.get("device", "mps")
+    device = torch.device("mps" if (device_str == "mps" and torch.backends.mps.is_available()) else "cpu")
     logger.info(f"Loading search engine on device: {device}...")
 
-    # Load Model
-    model = SentenceTransformer(args.model_path, device=str(device))
+    # 4. Load Model
+    model = SentenceTransformer(model_path, device=str(device))
     get_dim_fn = getattr(model, "get_embedding_dimension", getattr(model, "get_sentence_embedding_dimension", None))
     base_dim = get_dim_fn() if get_dim_fn else 768
-    dim = min(args.dim, base_dim)
+    dim = min(target_dim, base_dim)
 
-    # Load Corpus & Embeddings
-    data_dir = Path(args.data_dir)
-    corpus = load_corpus(data_dir / "corpus.jsonl")
+    # 5. Load Corpus & Embeddings
+    corpus = load_corpus(data_dir_path / "corpus.jsonl")
     corpus_embeds_raw = get_corpus_embeddings(
         model=model,
         corpus=corpus,
-        cache_path=data_dir / "corpus_embeddings.pt",
+        cache_path=data_dir_path / "corpus_embeddings.pt",
         device=device,
     )
 
@@ -177,26 +253,38 @@ def main():
     logger.info(f"Preparing corpus embeddings sliced at {dim} dimensions on {device}...")
     corpus_dim = F.normalize(corpus_embeds_raw[:, :dim], p=2, dim=1).to(device)
 
+    # 6. Initialize Generative Search Summarizer
+    summarizer = None
+    if summary_enabled:
+        summarizer = create_summarizer(config, backend_override=backend_choice)
+        logger.info(f"Initialized search summarizer: {summarizer.name} ({summarizer.model_name})")
+
     # Warmup query
     _, _ = run_query("warmup search query", model, corpus_dim, corpus, dim, 1, device)
 
     # Single-shot query execution
     if args.query:
-        results, latency_ms = run_query(args.query, model, corpus_dim, corpus, dim, args.top_k, device)
+        results, latency_ms = run_query(args.query, model, corpus_dim, corpus, dim, top_k, device)
         display_results(args.query, results, latency_ms, dim)
+        if summary_enabled and summarizer is not None:
+            display_summary(args.query, results, summarizer, stream=stream_output)
         sys.exit(0)
 
     # Interactive REPL mode
     print("\n" + "=" * 75)
-    print("HAWAII GOOGLE LOCAL - MRL SEARCH REPL")
-    print(f"Model: {args.model_path} | Dimension: {dim} | Corpus Size: {len(corpus)}")
-    print("Type your search query and press Enter. Type 'exit' or 'quit' to exit.")
+    print("HAWAII GOOGLE LOCAL - MRL SEARCH & GENERATIVE SUMMARY REPL")
+    print(f"Retrieval Model: {model_path} | Dimension: {dim} | Corpus Size: {len(corpus)}")
+    if summary_enabled and summarizer:
+        print(f"AI Overview    : Enabled ({summarizer.name} / {summarizer.model_name})")
+    else:
+        print("AI Overview    : Disabled")
+    print("Type your search query and press Enter. Type '/help' for commands or 'exit' to quit.")
     print("=" * 75 + "\n")
 
     try:
         while True:
             try:
-                user_input = input("\nEnter search query (or 'exit'): ").strip()
+                user_input = input("\nEnter query (or '/help'): ").strip()
             except EOFError:
                 break
             if not user_input:
@@ -205,8 +293,81 @@ def main():
                 print("Exiting search demo. Aloha!")
                 break
 
-            results, latency_ms = run_query(user_input, model, corpus_dim, corpus, dim, args.top_k, device)
+            # Handle interactive REPL commands
+            if user_input.startswith("/"):
+                cmd_parts = user_input.split()
+                cmd = cmd_parts[0].lower()
+
+                if cmd == "/help":
+                    print_repl_help()
+                    continue
+                elif cmd == "/config":
+                    print("\n--- Current Configuration (YAML) ---")
+                    print(f"  Retrieval Model : {model_path}")
+                    print(f"  Active Dimension: {dim}")
+                    print(f"  Summary Enabled : {summary_enabled}")
+                    if summarizer:
+                        print(f"  Summary Backend : {summarizer.name}")
+                        print(f"  Summary Model   : {summarizer.model_name}")
+                    print(f"  Local Model Name: {summary_cfg.get('local', {}).get('model_name')}")
+                    print(f"  Ollama Model    : {summary_cfg.get('ollama', {}).get('model_name')}")
+                    print(f"  Google Model    : {summary_cfg.get('google', {}).get('model_name')}")
+                    print("------------------------------------\n")
+                    continue
+                elif cmd == "/summary":
+                    if len(cmd_parts) > 1:
+                        arg = cmd_parts[1].lower()
+                        if arg in ("on", "true", "1", "enable"):
+                            summary_enabled = True
+                            if summarizer is None:
+                                summarizer = create_summarizer(config, backend_override=backend_choice)
+                            print(f"[AI Overview enabled: {summarizer.name} ({summarizer.model_name})]")
+                        elif arg in ("off", "false", "0", "disable"):
+                            summary_enabled = False
+                            print("[AI Overview disabled]")
+                        else:
+                            print("Usage: /summary [on|off]")
+                    else:
+                        print(f"AI Overview is currently: {'ENABLED' if summary_enabled else 'DISABLED'}")
+                    continue
+                elif cmd == "/backend":
+                    if len(cmd_parts) > 1:
+                        new_backend = cmd_parts[1].lower()
+                        backend_choice = new_backend
+                        summarizer = create_summarizer(config, backend_override=new_backend)
+                        summary_enabled = True
+                        print(f"[Switched summarizer to: {summarizer.name} ({summarizer.model_name})]")
+                    else:
+                        current = summarizer.name if summarizer else "none"
+                        print(f"Current backend: {current}. Usage: /backend [local|ollama|google|extractive|auto]")
+                    continue
+                elif cmd == "/dim":
+                    if len(cmd_parts) > 1:
+                        try:
+                            new_dim = int(cmd_parts[1])
+                            if new_dim > base_dim:
+                                print(f"Dimension cannot exceed model base dimension {base_dim}.")
+                                continue
+                            dim = new_dim
+                            print(f"Reslicing corpus to {dim} dimensions...")
+                            corpus_dim = F.normalize(corpus_embeds_raw[:, :dim], p=2, dim=1).to(device)
+                            print(f"[Dimension set to {dim}]")
+                        except ValueError:
+                            print("Usage: /dim [64|128|256|512|768]")
+                    else:
+                        print(f"Current dimension: {dim}")
+                    continue
+                else:
+                    print(f"Unknown command '{cmd}'. Type '/help' for options.")
+                    continue
+
+            # Execute search
+            results, latency_ms = run_query(user_input, model, corpus_dim, corpus, dim, top_k, device)
             display_results(user_input, results, latency_ms, dim)
+
+            # Generate AI search summary
+            if summary_enabled and summarizer is not None:
+                display_summary(user_input, results, summarizer, stream=stream_output)
 
     except KeyboardInterrupt:
         print("\nExiting search demo. Aloha!")
