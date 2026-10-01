@@ -11,6 +11,7 @@ import logging
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 # Add project root to sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -82,32 +83,66 @@ def run_query(
     dim: int,
     top_k: int,
     device: torch.device,
-) -> tuple[list[dict], float]:
-    """Execute dynamic MRL embedding search and measure elapsed latency."""
+    gazetteer: Any = None,
+    corpus_coords: Any = None,
+) -> tuple[list[dict], float, Any]:
+    """Execute dynamic MRL embedding search with optional geo-proximity filtering."""
     if device.type == "mps":
         torch.mps.synchronize()
     start_time = time.perf_counter()
 
-    # 1. Fast direct tokenization with fixed length to avoid Metal JIT recompilation
+    # 1. Parse geographic proximity constraint from query
+    import numpy as np
+    from src.geo import parse_geo_query
+    from src.geo.distance import compute_distances_vectorized
+    geo_constraint = parse_geo_query(query_text, gazetteer=gazetteer)
+    embed_query_text = geo_constraint.clean_query if geo_constraint.has_geo else query_text
+
+    # 2. Fast direct tokenization with fixed length to avoid Metal JIT recompilation
     tok = getattr(model, "tokenizer", None)
     with torch.no_grad():
         if tok is not None:
-            inputs = tok([query_text], return_tensors="pt", padding="max_length", max_length=64, truncation=True)
+            inputs = tok([embed_query_text], return_tensors="pt", padding="max_length", max_length=64, truncation=True)
             inputs = {k: v.to(device) for k, v in inputs.items()}
             out = model(inputs)
             query_raw = out.get("sentence_embedding", out.get("token_embeddings", None))
         else:
-            query_raw = model.encode([query_text], convert_to_tensor=True, normalize_embeddings=False, device=str(device))
+            query_raw = model.encode([embed_query_text], convert_to_tensor=True, normalize_embeddings=False, device=str(device))
 
-        # 2. Slice to requested Matryoshka dimension and L2-normalize
+        # 3. Slice to requested Matryoshka dimension and L2-normalize
         query_dim = F.normalize(query_raw[:, :dim], p=2, dim=1)
 
-        # 3. Vector dot product / cosine similarity against sliced corpus
+        # 4. Vector dot product / cosine similarity
         sims = torch.matmul(query_dim, corpus_dim.T)[0]
+        sims_np = sims.cpu().numpy()
 
-        # 4. Top-K ranking
+    # 5. Fast spatial proximity filtering and top-k selection
+    geo_distance_map = {}
+    if geo_constraint.has_geo and corpus_coords is not None:
+        dists = compute_distances_vectorized(corpus_coords, geo_constraint.latitude, geo_constraint.longitude)
+        valid_mask = dists <= geo_constraint.radius_miles
+        num_valid = int(valid_mask.sum())
+        if num_valid > 0:
+            sims_np[~valid_mask] = -1e9
+            top_k_clamped = min(top_k, num_valid)
+            top_indices_raw = np.argpartition(sims_np, -top_k_clamped)[-top_k_clamped:]
+            top_indices = top_indices_raw[np.argsort(-sims_np[top_indices_raw])].tolist()
+            top_scores = [float(sims_np[i]) for i in top_indices]
+            for idx in top_indices:
+                geo_distance_map[idx] = round(float(dists[idx]), 2)
+        else:
+            geo_constraint.notes.append(
+                f"No businesses found within {geo_constraint.radius_miles:.1f} miles of {geo_constraint.anchor_name}."
+            )
+            top_k_clamped = min(top_k, len(corpus))
+            top_indices_raw = np.argpartition(sims_np, -top_k_clamped)[-top_k_clamped:]
+            top_indices = top_indices_raw[np.argsort(-sims_np[top_indices_raw])].tolist()
+            top_scores = [float(sims_np[i]) for i in top_indices]
+    else:
         top_k_clamped = min(top_k, len(corpus))
-        top_scores, top_indices = torch.topk(sims, k=top_k_clamped)
+        top_indices_raw = np.argpartition(sims_np, -top_k_clamped)[-top_k_clamped:]
+        top_indices = top_indices_raw[np.argsort(-sims_np[top_indices_raw])].tolist()
+        top_scores = [float(sims_np[i]) for i in top_indices]
 
     if device.type == "mps":
         torch.mps.synchronize()
@@ -115,9 +150,12 @@ def run_query(
 
     results = []
     from src.data.reviews import select_top_review
-    for score, idx in zip(top_scores.tolist(), top_indices.tolist()):
+    primary_geo_note = geo_constraint.notes[0] if (geo_constraint and geo_constraint.notes) else None
+
+    for score, idx in zip(top_scores, top_indices):
         doc = corpus[idx]
-        top_rev = select_top_review(doc.get("top_reviews", []), query=query_text)
+        top_rev = select_top_review(doc.get("top_reviews", []), query=embed_query_text)
+        dist_val = geo_distance_map.get(idx)
         results.append({
             "name": doc.get("name", "Unknown"),
             "address": doc.get("address", "N/A"),
@@ -127,19 +165,35 @@ def run_query(
             "avg_rating": doc.get("avg_rating", "N/A"),
             "doc_id": doc.get("doc_id", ""),
             "top_review": top_rev,
+            "distance_miles": dist_val,
+            "distance_anchor": geo_constraint.anchor_name,
+            "geo_note": primary_geo_note,
         })
 
-    return results, latency_ms
+    return results, latency_ms, geo_constraint
 
 
-def display_results(query: str, results: list[dict], latency_ms: float, dim: int):
-    """Print beautifully formatted ranked search results."""
+def display_results(
+    query: str,
+    results: list[dict],
+    latency_ms: float,
+    dim: int,
+    geo_constraint: Any = None,
+):
+    """Print beautifully formatted ranked search results with optional distance metrics."""
     print("\n" + "-" * 75)
     print(f"QUERY: \"{query}\" (Dimension: {dim})")
+    if geo_constraint and geo_constraint.has_geo:
+        print(f"GEO CONSTRAINT   : {geo_constraint.describe()}")
+        for note in geo_constraint.notes:
+            print(f"[GEO NOTE]       : {note}")
     print(f"RETRIEVAL LATENCY: {latency_ms:.2f} ms " + ("[PASS < 50ms]" if latency_ms < 50.0 else "[EXCEEDED 50ms]"))
     print("-" * 75)
     for rank, res in enumerate(results, 1):
         print(f"[{rank}] {res['name']}  (Score: {res['score']:.4f})")
+        if res.get("distance_miles") is not None:
+            anchor_str = f" from {res['distance_anchor']}" if res.get("distance_anchor") else ""
+            print(f"    Distance   : {res['distance_miles']:.2f} miles{anchor_str}")
         print(f"    Address    : {res['address']}")
         print(f"    Categories : {res['category']}")
         print(f"    Rating     : {res['avg_rating']}")
@@ -251,6 +305,11 @@ def main():
 
     # 5. Load Corpus & Embeddings
     corpus = load_corpus(data_dir_path / "corpus.jsonl")
+    from src.geo import SpatialGazetteer
+    from src.geo.distance import build_corpus_coords_array
+    gazetteer = SpatialGazetteer(corpus=corpus)
+    corpus_coords = build_corpus_coords_array(corpus)
+
     corpus_embeds_raw = get_corpus_embeddings(
         model=model,
         corpus=corpus,
@@ -269,12 +328,12 @@ def main():
         logger.info(f"Initialized search summarizer: {summarizer.name} ({summarizer.model_name})")
 
     # Warmup query
-    _, _ = run_query("warmup search query", model, corpus_dim, corpus, dim, 1, device)
+    _, _, _ = run_query("warmup search query", model, corpus_dim, corpus, dim, 1, device, gazetteer=gazetteer, corpus_coords=corpus_coords)
 
     # Single-shot query execution
     if args.query:
-        results, latency_ms = run_query(args.query, model, corpus_dim, corpus, dim, top_k, device)
-        display_results(args.query, results, latency_ms, dim)
+        results, latency_ms, geo_constraint = run_query(args.query, model, corpus_dim, corpus, dim, top_k, device, gazetteer=gazetteer, corpus_coords=corpus_coords)
+        display_results(args.query, results, latency_ms, dim, geo_constraint=geo_constraint)
         if summary_enabled and summarizer is not None:
             display_summary(args.query, results, summarizer, stream=stream_output)
         sys.exit(0)
@@ -371,8 +430,8 @@ def main():
                     continue
 
             # Execute search
-            results, latency_ms = run_query(user_input, model, corpus_dim, corpus, dim, top_k, device)
-            display_results(user_input, results, latency_ms, dim)
+            results, latency_ms, geo_constraint = run_query(user_input, model, corpus_dim, corpus, dim, top_k, device, gazetteer=gazetteer, corpus_coords=corpus_coords)
+            display_results(user_input, results, latency_ms, dim, geo_constraint=geo_constraint)
 
             # Generate AI search summary
             if summary_enabled and summarizer is not None:

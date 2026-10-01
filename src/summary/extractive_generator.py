@@ -34,12 +34,24 @@ class ExtractiveSummarizer(BaseSearchSummarizer):
         top_cat = top_doc.get("category", "General")
         top_rating = top_doc.get("avg_rating", "N/A")
 
-        summary_lines = [
+        # Check for geographic note
+        geo_note = documents[0].get("geo_note")
+        summary_lines = []
+        if geo_note:
+            summary_lines.append(f"> ℹ️ **{geo_note}**\n")
+
+        dist_str = ""
+        if top_doc.get("distance_miles") is not None:
+            anchor = top_doc.get("distance_anchor")
+            anchor_part = f" from {anchor}" if anchor else ""
+            dist_str = f", located {top_doc['distance_miles']:.2f} miles{anchor_part}"
+
+        summary_lines.extend([
             f"Based on your search for **\"{query}\"**, the highest-matching destination in Hawaii is "
-            f"**{top_name}** ([1]), located at *{top_addr}* ({top_cat}, rated {top_rating}/5).",
+            f"**{top_name}** ([1]){dist_str} at *{top_addr}* ({top_cat}, rated {top_rating}/5).",
             "",
             "### Key Highlights & Recommendations:",
-        ]
+        ])
 
         # Process each place
         review_quotes = []
@@ -49,8 +61,11 @@ class ExtractiveSummarizer(BaseSearchSummarizer):
             category = doc.get("category", "Local business")
             rating = doc.get("avg_rating", "N/A")
             desc = doc.get("description", "None")
+            dist = doc.get("distance_miles")
+            anchor = doc.get("distance_anchor")
 
-            line = f"- **[{rank}] {name}** (Rating: {rating}/5)\n  *Address*: {addr}\n  *Type*: {category}"
+            dist_header = f" | {dist:.2f} mi from {anchor}" if dist is not None and anchor else (f" | {dist:.2f} mi" if dist is not None else "")
+            line = f"- **[{rank}] {name}** (Rating: {rating}/5{dist_header})\n  *Address*: {addr}\n  *Type*: {category}"
             if desc and desc != "None":
                 short_desc = desc[:140] + "..." if len(desc) > 140 else desc
                 line += f"\n  *Details*: {short_desc}"

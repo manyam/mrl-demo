@@ -39,6 +39,13 @@ def format_documents_context(documents: list[dict]) -> str:
             f"    Details: {details}",
         ]
 
+        # Attach distance if present
+        dist = doc.get("distance_miles")
+        if dist is not None:
+            anchor = doc.get("distance_anchor")
+            anchor_str = f" from {anchor}" if anchor else ""
+            block.append(f"    Distance: {dist:.2f} miles{anchor_str}")
+
         # Attach top customer review if available
         top_rev = doc.get("top_review")
         if top_rev and isinstance(top_rev, dict) and top_rev.get("text"):
@@ -54,11 +61,17 @@ def format_documents_context(documents: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
-def build_summary_prompt(query: str, documents: list[dict]) -> str:
+def build_summary_prompt(
+    query: str,
+    documents: list[dict],
+    geo_context: str | None = None,
+) -> str:
     """Construct full text prompt for causal completion models."""
     context = format_documents_context(documents)
+    geo_block = f"--- GEOGRAPHIC CONTEXT ---\n{geo_context}\n\n" if geo_context else ""
     return (
         f"{SYSTEM_INSTRUCTION}\n\n"
+        f"{geo_block}"
         f"--- RETRIEVED BUSINESSES & TOP REVIEWS ---\n"
         f"{context}\n\n"
         f"--- USER QUERY ---\n"
@@ -67,14 +80,21 @@ def build_summary_prompt(query: str, documents: list[dict]) -> str:
     )
 
 
-def build_chat_messages(query: str, documents: list[dict]) -> list[dict[str, str]]:
+def build_chat_messages(
+    query: str,
+    documents: list[dict],
+    geo_context: str | None = None,
+) -> list[dict[str, str]]:
     """Construct structured chat messages for chat/instruction-tuned models."""
     context = format_documents_context(documents)
+    geo_block = f"Geographic Notes:\n{geo_context}\n\n" if geo_context else ""
     user_content = (
         f"Based on the following top retrieved Hawaii businesses and their authentic customer reviews, "
         f"synthesize a comprehensive search overview answering the query: \"{query}\".\n\n"
+        f"{geo_block}"
         f"Retrieved Businesses & Top Customer Reviews:\n{context}\n\n"
-        f"Summarize the overall options using the reviews, provide bracketed citations [1]-[5], and include addresses."
+        f"Summarize the overall options using the reviews, account for geographic proximity and distance, "
+        f"provide bracketed citations [1]-[5], and include addresses."
     )
     return [
         {"role": "system", "content": SYSTEM_INSTRUCTION},
