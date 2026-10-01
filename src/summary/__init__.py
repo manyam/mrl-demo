@@ -20,14 +20,25 @@ class FallbackChainSummarizer(BaseSearchSummarizer):
         self.backends = [b for b in backends if b is not None]
         if not self.backends:
             self.backends = [ExtractiveSummarizer()]
+        self._last_active_backend: BaseSearchSummarizer | None = None
+
+    @property
+    def active_backend(self) -> BaseSearchSummarizer:
+        """Return the currently active or primary available backend in the chain."""
+        if self._last_active_backend is not None:
+            return self._last_active_backend
+        for b in self.backends:
+            if b.is_available():
+                return b
+        return self.backends[-1]
 
     @property
     def name(self) -> str:
-        return f"chain({self.backends[0].name})"
+        return f"chain({self.active_backend.name})"
 
     @property
     def model_name(self) -> str:
-        return self.backends[0].model_name
+        return self.active_backend.model_name
 
     def is_available(self) -> bool:
         return any(b.is_available() for b in self.backends)
@@ -37,21 +48,28 @@ class FallbackChainSummarizer(BaseSearchSummarizer):
             try:
                 if backend.is_available():
                     logger.info(f"Generating summary using backend '{backend.name}' ({backend.model_name})...")
-                    return backend.generate(query, documents)
+                    res = backend.generate(query, documents)
+                    self._last_active_backend = backend
+                    return res
             except Exception as e:
                 logger.warning(f"Backend '{backend.name}' failed during generation: {e}. Trying fallback...")
-        return ExtractiveSummarizer().generate(query, documents)
+        fallback = ExtractiveSummarizer()
+        self._last_active_backend = fallback
+        return fallback.generate(query, documents)
 
     def stream_generate(self, query: str, documents: list[dict]) -> Iterator[str]:
         for idx, backend in enumerate(self.backends):
             try:
                 if backend.is_available():
                     logger.info(f"Streaming summary using backend '{backend.name}' ({backend.model_name})...")
+                    self._last_active_backend = backend
                     yield from backend.stream_generate(query, documents)
                     return
             except Exception as e:
                 logger.warning(f"Backend '{backend.name}' failed during streaming: {e}. Trying fallback...")
-        yield from ExtractiveSummarizer().stream_generate(query, documents)
+        fallback = ExtractiveSummarizer()
+        self._last_active_backend = fallback
+        yield from fallback.stream_generate(query, documents)
 
 
 def create_summarizer(
@@ -75,19 +93,9 @@ def create_summarizer(
     top_p = summary_cfg.get("top_p", 0.9)
 
     # Instantiate individual backends
-    def get_local():
-        return LocalGemmaSummarizer(
-            model_name=local_cfg.get("model_name", "google/gemma-2-2b-it"),
-            device=local_cfg.get("device", "mps"),
-            torch_dtype=local_cfg.get("torch_dtype", "float16"),
-            max_new_tokens=max_tokens,
-            temperature=temp,
-            top_p=top_p,
-        )
-
     def get_ollama():
         return OllamaGemmaSummarizer(
-            model_name=ollama_cfg.get("model_name", "gemma2:2b"),
+            model_name=ollama_cfg.get("model_name", "gemma4:26b-mlx"),
             base_url=ollama_cfg.get("base_url", "http://localhost:11434"),
             temperature=temp,
             timeout=ollama_cfg.get("timeout", 30.0),
@@ -101,29 +109,39 @@ def create_summarizer(
             timeout=google_cfg.get("timeout", 20.0),
         )
 
+    def get_local():
+        return LocalGemmaSummarizer(
+            model_name=local_cfg.get("model_name", "google/gemma-2-2b-it"),
+            device=local_cfg.get("device", "mps"),
+            torch_dtype=local_cfg.get("torch_dtype", "float16"),
+            max_new_tokens=max_tokens,
+            temperature=temp,
+            top_p=top_p,
+        )
+
     def get_extractive():
         return ExtractiveSummarizer()
 
-    if backend == "local":
-        return get_local()
-    elif backend == "ollama":
+    if backend == "ollama":
         return get_ollama()
     elif backend == "google":
         return get_google()
+    elif backend == "local":
+        return get_local()
     elif backend == "extractive":
         return get_extractive()
     elif backend == "auto":
-        # Fallback hierarchy: Local MPS Gemma -> Local Ollama Gemma -> Google API -> Extractive
+        # Fallback hierarchy: 1. Ollama -> 2. Google API -> 3. Local MPS Gemma -> 4. Extractive
         chain = [
-            get_local(),
             get_ollama(),
             get_google(),
+            get_local(),
             get_extractive(),
         ]
         return FallbackChainSummarizer(chain)
     else:
         logger.warning(f"Unknown backend '{backend}'; falling back to auto chain.")
-        return FallbackChainSummarizer([get_local(), get_ollama(), get_google(), get_extractive()])
+        return FallbackChainSummarizer([get_ollama(), get_google(), get_local(), get_extractive()])
 
 
 __all__ = [

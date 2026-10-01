@@ -14,26 +14,26 @@ retrieval:
 summary:
   enabled: true
   stream: true
-  default_backend: "auto"          # Options: "auto", "local", "ollama", "google", "extractive"
+  default_backend: "auto"          # Options: "auto", "ollama", "google", "local", "extractive"
   
   # Generation Hyperparameters
   max_new_tokens: 384
   temperature: 0.3
   top_p: 0.9
 
-  # Backend 1: Local Transformers on Apple Silicon MPS
-  local:
-    model_name: "google/gemma-2-2b-it"  # Configurable local HF model identifier or local path
-    torch_dtype: "float16"              # "float16" or "bfloat16"
-    device: "mps"
-
-  # Backend 2: Local Ollama Gemma
+  # Option 1: Local Ollama Gemma (First Priority)
   ollama:
     base_url: "http://localhost:11434"
-    model_name: "gemma2:2b"             # Configurable Ollama model (e.g. gemma2:2b, gemma:2b, gemma2:9b)
+    model_name: "gemma4:26b-mlx"             # Configurable Ollama model (e.g. gemma4:26b-mlx, gemma2:2b, gemma2:9b)
     timeout: 30.0
 
-  # Backend 3: Google Generative AI API (GOOGLE_API_KEY or GEMINI_API_KEY)
+  # Option 2: Google Generative AI API (Second Priority - requires GOOGLE_API_KEY or GEMINI_API_KEY)
   google:
-    model_name: "gemini-2.0-flash"      # Configurable Google model (e.g. gemini-2.0-flash, gemini-1.5-flash)
+    model_name: "gemini-2.0-flash"           # Configurable Google model (e.g. gemini-2.0-flash, gemini-1.5-flash)
     timeout: 20.0
+
+  # Option 3: Local HuggingFace Transformers on Apple Silicon MPS (Third Priority)
+  local:
+    model_name: "google/gemma-2-2b-it"       # Configurable local HF model identifier or local path
+    torch_dtype: "float16"                   # "float16" or "bfloat16"
+    device: "mps"

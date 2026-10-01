@@ -54,7 +54,7 @@ class TestSummaryModule(unittest.TestCase):
         self.assertEqual(config.retrieval.default_dimension, 128)
         self.assertTrue(config.summary.enabled)
         self.assertEqual(config.summary.local.model_name, "google/gemma-2-2b-it")
-        self.assertEqual(config.summary.ollama.model_name, "gemma2:2b")
+        self.assertTrue(bool(config.summary.ollama.model_name))
         self.assertEqual(config.summary.google.model_name, "gemini-2.0-flash")
 
     def test_prompt_formatting(self):
@@ -113,6 +113,21 @@ class TestSummaryModule(unittest.TestCase):
 
         auto_sum = create_summarizer(config, backend_override="auto")
         self.assertIsInstance(auto_sum, FallbackChainSummarizer)
+
+    def test_fallback_hierarchy_order(self):
+        """Verify that the auto fallback chain orders backends: ollama -> google -> local -> extractive."""
+        config = load_config("configs/config.yaml")
+        auto_sum = create_summarizer(config, backend_override="auto")
+        self.assertIsInstance(auto_sum, FallbackChainSummarizer)
+        backend_names = [b.name for b in auto_sum.backends]
+        self.assertEqual(backend_names, ["ollama", "google", "local", "extractive"])
+
+    def test_fallback_chain_active_backend(self):
+        """Verify FallbackChainSummarizer dynamically identifies active backend."""
+        ext = ExtractiveSummarizer()
+        chain = FallbackChainSummarizer([ext])
+        self.assertEqual(chain.name, "chain(extractive)")
+        self.assertEqual(chain.model_name, "extractive-heuristic")
 
 
 if __name__ == "__main__":

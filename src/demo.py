@@ -255,7 +255,7 @@ def print_repl_help():
     """Print REPL interactive commands."""
     print("\nAvailable REPL Commands:")
     print("  /summary [on|off]              : Enable or disable AI Search Overview")
-    print("  /backend [local|ollama|google|extractive|auto] : Switch summary backend")
+    print("  /backend [auto|ollama|google|local|extractive] : Switch summary backend")
     print("  /dim [64|128|256|512|768]      : Switch Matryoshka retrieval dimension")
     print("  /config                        : View currently loaded configuration")
     print("  /help                          : Show this help message")
@@ -272,7 +272,7 @@ def main():
     parser.add_argument("--query", type=str, default=None, help="Execute single query and exit")
     parser.add_argument("--summary", dest="summary_enabled", action="store_true", default=None, help="Enable generative search summary")
     parser.add_argument("--no-summary", dest="summary_enabled", action="store_false", help="Disable generative search summary")
-    parser.add_argument("--summary_backend", type=str, default=None, choices=["auto", "local", "ollama", "google", "extractive"], help="Override summary backend")
+    parser.add_argument("--summary_backend", type=str, default=None, choices=["auto", "ollama", "google", "local", "extractive"], help="Override summary backend")
     parser.add_argument("--no-stream", dest="stream", action="store_false", default=True, help="Disable real-time token streaming")
     args = parser.parse_args()
 
@@ -377,9 +377,9 @@ def main():
                     if summarizer:
                         print(f"  Summary Backend : {summarizer.name}")
                         print(f"  Summary Model   : {summarizer.model_name}")
-                    print(f"  Local Model Name: {summary_cfg.get('local', {}).get('model_name')}")
-                    print(f"  Ollama Model    : {summary_cfg.get('ollama', {}).get('model_name')}")
-                    print(f"  Google Model    : {summary_cfg.get('google', {}).get('model_name')}")
+                    print(f"  1. Ollama Model : {summary_cfg.get('ollama', {}).get('model_name')}")
+                    print(f"  2. Google Model : {summary_cfg.get('google', {}).get('model_name')}")
+                    print(f"  3. HF Model     : {summary_cfg.get('local', {}).get('model_name')}")
                     print("------------------------------------\n")
                     continue
                 elif cmd == "/summary":
@@ -407,7 +407,7 @@ def main():
                         print(f"[Switched summarizer to: {summarizer.name} ({summarizer.model_name})]")
                     else:
                         current = summarizer.name if summarizer else "none"
-                        print(f"Current backend: {current}. Usage: /backend [local|ollama|google|extractive|auto]")
+                        print(f"Current backend: {current}. Usage: /backend [auto|ollama|google|local|extractive]")
                     continue
                 elif cmd == "/dim":
                     if len(cmd_parts) > 1:
