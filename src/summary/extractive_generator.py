@@ -41,6 +41,8 @@ class ExtractiveSummarizer(BaseSearchSummarizer):
             "### Key Highlights & Recommendations:",
         ]
 
+        # Process each place
+        review_quotes = []
         for rank, doc in enumerate(documents, 1):
             name = doc.get("name", f"Place #{rank}")
             addr = doc.get("address", "Address unavailable")
@@ -52,7 +54,23 @@ class ExtractiveSummarizer(BaseSearchSummarizer):
             if desc and desc != "None":
                 short_desc = desc[:140] + "..." if len(desc) > 140 else desc
                 line += f"\n  *Details*: {short_desc}"
+
+            # Extract review if present
+            top_rev = doc.get("top_review") or (doc["top_reviews"][0] if doc.get("top_reviews") else None)
+            if top_rev and isinstance(top_rev, dict) and top_rev.get("text"):
+                rev_text = top_rev["text"].strip()
+                rev_rating = top_rev.get("rating", 5)
+                short_rev = rev_text[:140] + "..." if len(rev_text) > 140 else rev_text
+                line += f"\n  *Top Review*: \"{short_rev}\" (★ {rev_rating})"
+                review_quotes.append(f"- **{name}** ([{rank}]): \"{short_rev}\"")
+
             summary_lines.append(line)
+
+        # Synthesize customer consensus across options
+        if review_quotes:
+            summary_lines.append("")
+            summary_lines.append("### Customer Consensus & Review Insights:")
+            summary_lines.extend(review_quotes)
 
         # Synthesize category groupings
         categories = [d.get("category", "") for d in documents if d.get("category")]
@@ -61,9 +79,9 @@ class ExtractiveSummarizer(BaseSearchSummarizer):
             cats_str = ", ".join(unique_cats[:3])
             summary_lines.append("")
             summary_lines.append(
-                f"**Overview Summary**: Across the top {len(documents)} results, options span {cats_str}. "
-                f"For the closest match to your criteria, visit **{top_name}** ([1]), or explore the other "
-                f"annotated places above based on your preferred location and style."
+                f"**Overall Options Summary**: Across the top {len(documents)} results, options span {cats_str}. "
+                f"For the highest overall match, **{top_name}** ([1]) leads customer satisfaction, "
+                f"while the other annotated options above provide great alternatives based on reviews and location."
             )
 
         return "\n".join(summary_lines)

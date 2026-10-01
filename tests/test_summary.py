@@ -67,7 +67,7 @@ class TestSummaryModule(unittest.TestCase):
         self.assertIn("[3] Name: Surfers Coffee", context)
 
         prompt = build_summary_prompt(query, self.sample_documents)
-        self.assertIn("--- RETRIEVED BUSINESSES ---", prompt)
+        self.assertIn("--- RETRIEVED BUSINESSES & TOP REVIEWS ---", prompt)
         self.assertIn(query, prompt)
 
         messages = build_chat_messages(query, self.sample_documents)

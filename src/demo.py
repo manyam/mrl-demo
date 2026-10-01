@@ -114,8 +114,10 @@ def run_query(
     latency_ms = (time.perf_counter() - start_time) * 1000.0
 
     results = []
+    from src.data.reviews import select_top_review
     for score, idx in zip(top_scores.tolist(), top_indices.tolist()):
         doc = corpus[idx]
+        top_rev = select_top_review(doc.get("top_reviews", []), query=query_text)
         results.append({
             "name": doc.get("name", "Unknown"),
             "address": doc.get("address", "N/A"),
@@ -124,6 +126,7 @@ def run_query(
             "description": doc.get("description", "None"),
             "avg_rating": doc.get("avg_rating", "N/A"),
             "doc_id": doc.get("doc_id", ""),
+            "top_review": top_rev,
         })
 
     return results, latency_ms
@@ -140,7 +143,13 @@ def display_results(query: str, results: list[dict], latency_ms: float, dim: int
         print(f"    Address    : {res['address']}")
         print(f"    Categories : {res['category']}")
         print(f"    Rating     : {res['avg_rating']}")
-        if res['description'] and res['description'] != "None":
+        if res.get("top_review") and res["top_review"].get("text"):
+            rev = res["top_review"]
+            rev_text = rev["text"].strip()
+            preview = rev_text[:140] + "..." if len(rev_text) > 140 else rev_text
+            rating_val = rev.get("rating", 5.0)
+            print(f"    Top Review : \"{preview}\" (★ {rating_val})")
+        elif res['description'] and res['description'] != "None":
             desc_preview = res['description'][:120] + "..." if len(res['description']) > 120 else res['description']
             print(f"    Details    : {desc_preview}")
         print()
