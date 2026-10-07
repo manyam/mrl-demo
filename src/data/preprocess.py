@@ -327,8 +327,20 @@ def main():
     )
 
     # Corpus for retrieval evaluation and search demo
-    corpus = [
-        {
+    from src.data.reviews import score_review
+    corpus = []
+    for b_id, b_data in businesses.items():
+        biz_revs = biz_to_reviews.get(b_id, [])
+        if biz_revs:
+            biz_revs_sorted = sorted(biz_revs, key=lambda r: score_review(r), reverse=True)
+            top_revs = [
+                {"text": r["text"], "rating": r.get("rating", 5.0), "user_id": r.get("user_id", "")}
+                for r in biz_revs_sorted[:3]
+            ]
+        else:
+            top_revs = []
+
+        corpus.append({
             "doc_id": b_id,
             "text": b_data["enriched_text"],
             "name": b_data["name"],
@@ -339,9 +351,8 @@ def main():
             "num_of_reviews": b_data["num_of_reviews"],
             "latitude": b_data["latitude"],
             "longitude": b_data["longitude"],
-        }
-        for b_id, b_data in businesses.items()
-    ]
+            "top_reviews": top_revs,
+        })
 
     # Test Qrels mapping: query_id -> {doc_id: 1}
     test_qrels = {

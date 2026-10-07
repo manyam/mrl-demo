@@ -94,20 +94,76 @@ This automatically:
 
 ---
 
-## Interactive CLI Demo
+---
 
-Launch the interactive search utility to search Hawaii businesses in real time:
+## Interactive CLI Demo & Generative Search Summarization
+
+Launch the interactive search utility to search Hawaii businesses in real time and generate an AI Search Overview:
 
 ```bash
-# Interactive REPL mode (default 128 dimensions)
+# Interactive REPL mode (default 128 dimensions, auto summarizer)
 python3 src/demo.py --dim 128
 
-# Single-shot query execution
+# Single-shot query execution with streaming AI overview
 python3 src/demo.py \
     --query "quiet beachfront coffee shop with vegan options" \
     --dim 128 \
     --top_k 5
+
+# Override summary backend explicitly (local, ollama, google, or extractive)
+python3 src/demo.py \
+    --query "poke bowl near waikiki beach" \
+    --summary_backend google
+
+# Disable summary to inspect pure retrieval latency
+python3 src/demo.py --query "authentic shave ice" --no-summary
 ```
+
+### Configurable Model Names (`configs/config.yaml`)
+
+All retrieval and generative summary models are configurable via [`configs/config.yaml`](file:///Users/manyam2025/src/mrl-demo/configs/config.yaml):
+
+```yaml
+retrieval:
+  model_path: "checkpoints/best_model"
+  default_dimension: 128
+  top_k: 5
+  device: "mps"
+
+summary:
+  enabled: true
+  stream: true
+  default_backend: "auto"          # "auto", "local", "ollama", "google", "extractive"
+  max_new_tokens: 384
+  temperature: 0.3
+
+  local:
+    model_name: "google/gemma-2-2b-it"  # HuggingFace MPS model
+    torch_dtype: "float16"
+
+  ollama:
+    base_url: "http://localhost:11434"
+    model_name: "gemma2:2b"             # Local Ollama Gemma model
+
+  google:
+    model_name: "gemini-2.0-flash"      # Google Generative AI (GOOGLE_API_KEY)
+```
+
+### Multi-Backend Fallback Hierarchy
+
+When `--summary_backend auto` is used, the engine automatically resolves through the following priority chain:
+1. **Local Transformers Gemma on Apple Silicon MPS** (`google/gemma-2-2b-it`)
+2. **Local Ollama Gemma Models** (`gemma2:2b` / `gemma:2b` via `http://localhost:11434`)
+3. **Google API via `GOOGLE_API_KEY` / `GEMINI_API_KEY`** (`gemini-2.0-flash` streaming REST)
+4. **Extractive Heuristic Fallback** (Zero-dependency, instant $<1$ ms, offline safe)
+
+### Interactive REPL Commands
+While running in interactive REPL mode, you can control the engine dynamically:
+- `/summary [on|off]`: Toggle the AI Search Overview on or off.
+- `/backend [local|ollama|google|extractive|auto]`: Switch summarization backend on the fly.
+- `/dim [64|128|256|512|768]`: Dynamically reslice MRL retrieval dimension.
+- `/config`: Inspect active YAML configuration and model names.
+- `/help`: Display all available REPL commands.
 
 ---
 
